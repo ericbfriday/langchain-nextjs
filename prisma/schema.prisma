@@ -1,0 +1,441 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// Core Authentication Models (Better Auth)
+// ==========================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  oktaId        String?   @unique
+  emailVerified Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+
+  // Workspace association
+  workspaceId String?
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id])
+
+  // Role and permissions
+  role        String           @default("member")
+  permissions UserPermission[]
+
+  // Security fields
+  failedLoginAttempts   Int       @default(0)
+  lockedUntil           DateTime?
+  lastPasswordChange    DateTime?
+  requirePasswordChange Boolean   @default(false)
+
+  // Metadata
+  metadata Json?
+
+  // Relations
+  sessions     Session[]
+  accounts     Account[]
+  apiKeys      ApiKey[]
+  auditLogs    AuditLog[]
+  RefreshToken RefreshToken[]
+
+  @@index([email])
+  @@index([oktaId])
+  @@index([workspaceId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Session metadata
+  ipAddress  String?
+  userAgent  String?
+  deviceId   String?
+  deviceName String?
+
+  // Multi-session tracking
+  isActive  Boolean   @default(true)
+  revokedAt DateTime?
+  revokedBy String?
+
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  RefreshToken RefreshToken[]
+  AccessToken  AccessToken[]
+
+  @@index([token])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Account {
+  id                   String    @id @default(cuid())
+  userId               String
+  providerId           String
+  providerAccountId    String
+  refreshToken         String?
+  accessToken          String?
+  accessTokenExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, providerAccountId])
+  @@index([userId])
+}
+
+// ==========================================
+// SSO Provider Configuration
+// ==========================================
+
+model SSOProvider {
+  id             String  @id @default(cuid())
+  providerId     String  @unique
+  issuer         String
+  domain         String?
+  organizationId String?
+
+  // Configuration (JSON)
+  oidcConfig Json?
+  samlConfig Json?
+  mapping    Json
+
+  // Provider state
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization? @relation(fields: [organizationId], references: [id])
+
+  @@index([domain])
+  @@index([organizationId])
+}
+
+// ==========================================
+// Workspace & Organization Management
+// ==========================================
+
+model Workspace {
+  id             String  @id @default(cuid())
+  name           String
+  slug           String  @unique
+  domain         String?
+  allowedDomains Json? // Array of allowed email domains
+
+  // Okta integration
+  oktaTenantId String?
+  oktaApiToken String? // Encrypted
+
+  // Limits and quotas
+  maxUsers     Int    @default(10)
+  maxApiKeys   Int    @default(5)
+  storageQuota BigInt @default(1073741824) // 1GB in bytes
+
+  // Features (JSON array)
+  features Json @default("[]")
+
+  // Billing
+  plan         String    @default("free")
+  billingEmail String?
+  trialEndsAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users          User[]
+  securityPolicy SecurityPolicy?
+  permissions    UserPermission[]
+  auditLogs      AuditLog[]
+
+  @@index([slug])
+  @@index([domain])
+}
+
+model Organization {
+  id     String  @id @default(cuid())
+  name   String
+  slug   String  @unique
+  domain String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ssoProviders SSOProvider[]
+
+  @@index([slug])
+  @@index([domain])
+}
+
+// ==========================================
+// Security & Compliance
+// ==========================================
+
+model SecurityPolicy {
+  id          String @id @default(cuid())
+  workspaceId String @unique
+
+  // Authentication requirements
+  mfaRequired           Boolean   @default(false)
+  mfaEnrollmentDeadline DateTime?
+
+  // Session policies
+  sessionTimeout        Int @default(28800) // 8 hours in seconds
+  idleTimeout           Int @default(1800) // 30 minutes
+  maxConcurrentSessions Int @default(5)
+
+  // IP restrictions
+  ipWhitelist Json? // Array of IP addresses/ranges
+  requireVpn  Boolean @default(false)
+
+  // Password policies
+  passwordMinLength      Int     @default(12)
+  passwordRequireUpper   Boolean @default(true)
+  passwordRequireNumber  Boolean @default(true)
+  passwordRequireSpecial Boolean @default(true)
+  passwordExpirationDays Int?
+  passwordHistoryCount   Int     @default(5)
+
+  // Data policies
+  dataRetentionDays     Int @default(90)
+  auditLogRetentionDays Int @default(365)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model UserPermission {
+  id          String @id @default(cuid())
+  userId      String
+  workspaceId String
+  permission  String
+
+  grantedBy String
+  grantedAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId, permission])
+  @@index([userId])
+  @@index([workspaceId])
+}
+
+// ==========================================
+// API Key Management
+// ==========================================
+
+model ApiKey {
+  id        String @id @default(cuid())
+  userId    String
+  name      String
+  key       String @unique
+  hashedKey String @unique
+
+  // Scopes and permissions
+  scopes Json @default("[]")
+
+  // Rate limiting
+  rateLimitEnabled Boolean @default(true)
+  rateLimitWindow  Int     @default(3600000) // 1 hour in ms
+  rateLimitMax     Int     @default(1000)
+
+  // Usage tracking
+  lastUsedAt DateTime?
+  usageCount Int       @default(0)
+
+  // Lifecycle
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([key])
+  @@index([hashedKey])
+  @@index([userId])
+}
+
+// ==========================================
+// Audit & Monitoring
+// ==========================================
+
+model AuditLog {
+  id          String  @id @default(cuid())
+  userId      String?
+  workspaceId String?
+
+  action     String
+  resource   String?
+  resourceId String?
+
+  // Request context
+  ip        String?
+  userAgent String?
+  requestId String?
+
+  // Result
+  success      Boolean
+  errorCode    String?
+  errorMessage String?
+
+  // Additional data
+  metadata Json?
+
+  timestamp DateTime @default(now())
+
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([workspaceId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+// ==========================================
+// Rate Limiting
+// ==========================================
+
+model RateLimit {
+  id      String   @id @default(cuid())
+  key     String   @unique
+  count   Int      @default(0)
+  resetAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([resetAt])
+}
+
+// ==========================================
+// Token Management
+// ==========================================
+
+model RefreshToken {
+  id        String  @id @default(cuid())
+  token     String  @unique
+  userId    String
+  sessionId String
+  familyId  String
+  deviceId  String?
+
+  expiresAt    DateTime
+  refreshCount Int      @default(0)
+  scope        String?
+
+  previousTokenId String?
+  revokedAt       DateTime?
+  revokedBy       String?
+
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([familyId])
+  @@index([userId])
+}
+
+model AccessToken {
+  id        String @id @default(cuid())
+  token     String @unique
+  userId    String
+  sessionId String
+  familyId  String
+
+  expiresAt DateTime
+  scope     String?
+
+  revokedAt DateTime?
+  revokedBy String?
+
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([familyId])
+}
+
+// ==========================================
+// Security Events
+// ==========================================
+
+model SecurityEvent {
+  id       String  @id @default(cuid())
+  event    String
+  userId   String?
+  severity String // LOW, MEDIUM, HIGH, CRITICAL
+
+  metadata Json?
+
+  timestamp DateTime @default(now())
+
+  @@index([event])
+  @@index([userId])
+  @@index([severity])
+  @@index([timestamp])
+}
+
+// ==========================================
+// Health Monitoring
+// ==========================================
+
+model HealthCheck {
+  id     String @id @default(cuid())
+  status String // healthy, degraded, unhealthy
+
+  checks  Json // Component health statuses
+  metrics Json // System metrics
+
+  timestamp DateTime @default(now())
+
+  @@index([status])
+  @@index([timestamp])
+}
+
+// ==========================================
+// Application Data (Example)
+// ==========================================
+
+model Document {
+  id      String @id @default(cuid())
+  title   String
+  content String
+
+  createdBy   String
+  workspaceId String
+
+  isPublic   Boolean @default(false)
+  isArchived Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([createdBy])
+}
